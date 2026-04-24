@@ -5,8 +5,11 @@ const { google } = require("googleapis");
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// ===== GOOGLE AUTH (ENV орқали) =====
+// ===== GOOGLE AUTH: ENV орқали =====
 const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+
+// private_key ичидаги \n муаммосини тўғрилайди
+credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
 
 const auth = new google.auth.GoogleAuth({
   credentials: credentials,
@@ -16,7 +19,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 const SHEET_ID = process.env.SHEET_ID;
 
-// ===== UI =====
+// ===== МЕНЮ =====
 function menu() {
   return Markup.keyboard([
     ["📦 Қарзга олиш"],
@@ -25,26 +28,36 @@ function menu() {
 }
 
 // ===== START =====
-bot.start((ctx) => {
-  ctx.reply("Асосий меню", menu());
+bot.start(async (ctx) => {
+  await ctx.reply("Асосий меню", menu());
 });
 
-// ===== ТЎЛОВ =====
+// ===== TEST: GOOGLE SHEETS =====
 bot.hears("💳 Тўлов учун ариза", async (ctx) => {
-  ctx.reply("Тўлов киритиш бошланди");
+  try {
+    await ctx.reply("Тўлов киритиш бошланди...");
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: "Test!A:B",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [
-        [new Date().toLocaleString(), "TEST OK"]
-      ]
-    }
-  });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "Test!A:B",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [
+          [new Date().toLocaleString("ru-RU"), "TEST OK"]
+        ]
+      }
+    });
 
-  ctx.reply("✅ Google Sheets ишлади");
+    await ctx.reply("✅ Google Sheets ишлади", menu());
+  } catch (err) {
+    console.error("Sheets error:", err);
+    await ctx.reply("❌ Google Sheets хатоси. Render Logs ни текширинг.");
+  }
+});
+
+// ===== ҚАРЗГА ОЛИШ TEST =====
+bot.hears("📦 Қарзга олиш", async (ctx) => {
+  await ctx.reply("Қарзга олиш қисми кейин уланади.", menu());
 });
 
 // ===== SERVER =====
@@ -57,5 +70,5 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("Server started");
+  console.log("Server started on " + PORT);
 });
