@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const { Telegraf, Markup } = require("telegraf");
 const { google } = require("googleapis");
@@ -646,14 +648,31 @@ bot.action(/paid\|(.+)/, async ctx => {
   await ctx.answerCbQuery();
 });
 
+// Webhook mode (Render.com uchun)
+app.use(express.json());
 app.use(bot.webhookCallback("/bot"));
 
 app.get("/", (req, res) => {
-  res.send("Bot ishlayapti");
+  res.send("Bot ishlayapti ✅");
 });
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log("Server started on " + PORT);
+
+  // Render URL dan webhook o'rnatish
+  if (process.env.RENDER_EXTERNAL_URL) {
+    const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/bot`;
+    await bot.telegram.setWebhook(webhookUrl);
+    console.log("Webhook set:", webhookUrl);
+  } else {
+    // Local development uchun polling
+    await bot.telegram.deleteWebhook();
+    bot.launch();
+    console.log("Bot polling mode da ishlamoqda...");
+  }
 });
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
