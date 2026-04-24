@@ -6,8 +6,9 @@ const NodeCache = require("node-cache");
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const cache = new NodeCache({ stdTTL: 300 });
-
 const sessions = {};
+
+const SHEET_ID = process.env.SHEET_ID;
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
@@ -15,7 +16,6 @@ const auth = new google.auth.GoogleAuth({
 });
 
 const sheets = google.sheets({ version: "v4", auth });
-const SHEET_ID = process.env.SHEET_ID;
 
 function menu() {
   return Markup.keyboard([
@@ -24,19 +24,8 @@ function menu() {
   ]).resize();
 }
 
-function backKeyboard() {
+function backMenu() {
   return Markup.keyboard([["⬅️ Орқага"]]).resize();
-}
-
-function makeKeyboard(items, addNewText) {
-  const rows = items.map(x => [x]);
-  rows.push([addNewText]);
-  rows.push(["⬅️ Орқага"]);
-  return Markup.keyboard(rows).resize();
-}
-
-function isInnValid(inn) {
-  return /^\d{9}$/.test(String(inn).trim());
 }
 
 function cleanNumber(text) {
@@ -47,9 +36,17 @@ function formatSum(n) {
   return Number(n || 0).toLocaleString("ru-RU");
 }
 
-async function getRows(range, cacheKey) {
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
+function validInn(inn) {
+  return /^\d{9}$/.test(String(inn).trim());
+}
+
+function active(v) {
+  return v === true || String(v).toUpperCase() === "TRUE" || v === "" || v === undefined;
+}
+
+async function getValues(range, key) {
+  const c = cache.get(key);
+  if (c) return c;
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
@@ -57,115 +54,185 @@ async function getRows(range, cacheKey) {
   });
 
   const rows = res.data.values || [];
-  cache.set(cacheKey, rows);
+  cache.set(key, rows);
   return rows;
 }
 
-async function appendRow(range, values) {
+async function append(range, row) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [values] }
+    requestBody: { values: [row] }
+  });
+}
+
+async function updateCell(range, value) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[value]] }
   });
 }
 
 async function getObjects() {
-  const rows = await getRows("Объектлар!A2:B", "objects");
-  return rows.filter(r => r[0] && String(r[1]).toUpperCase() === "TRUE").map(r => r[0]);
+  const rows = await getValues("Объектлар!A2:B", "objects");
+  return rows.filter(r => r[0] && active(r[1])).map(r => r[0]);
 }
 
 async function getSuppliers() {
-  const rows = await getRows("Етказиб_берувчилар!A2:E", "suppliers");
-  return rows
-    .filter(r => r[0] && (String(r[4]).toUpperCase() === "TRUE" || !r[4]))
-    .map(r => `${r[0]} — ${r[1] || ""}`);
+  const rows = await getValues("Етказиб_берувчилар!A2:E", "suppliers");
+  return rows.filter(r => r[0] && active(r[4])).map(r => `${r[0]} — ${r[1] || ""}`);
 }
 
 async function getMaterials() {
-  const rows = await getRows("Материаллар_хизматлар!A2:C", "materials");
-  return rows
-    .filter(r => r[0] && (String(r[2]).toUpperCase() === "TRUE" || !r[2]))
-    .map(r => r[0]);
+  const rows = await getValues("Материаллар_хизматлар!A2:C", "materials");
+  return rows.filter(r => r[0] && active(r[2])).map(r => r[0]);
+}
+
+function supplierKeyboard(list) {
+  return Markup.keyboard([
+    ...list.map(x => [x]),
+    ["➕ Янги етказиб берувчи"],
+    ["⬅️ Орқага"]
+  ]).resize();
+}
+
+function materialKeyboard(list) {
+  return Markup.keyboard([
+    ...list.map(x => [x]),
+    ["➕ Янги материал/хизмат"],
+    ["⬅️ Орқага"]
+  ]).resize();
 }
 
 function parseSupplier(text) {
-  const parts = String(text).split(" — ");
-  return {
-    name: parts[0].trim(),
-    inn: (parts[1] || "").trim()
-  };
+  const p = String(text).split(" — ");
+  return { name: (p[0] || "").trim(), inn: (p[1] || "").trim() };
 }
 
 async function addSupplier(name, inn) {
-  await appendRow("Етказиб_берувчилар!A:E", [
-    name,
-    inn,
-    "",
-    "",
-    "TRUE"
-  ]);
+  await append("Етказиб_берувчилар!A:E", [name, inn, "", "", "TRUE"]);
   cache.del("suppliers");
 }
 
 async function addMaterial(name) {
-  await appendRow("Материаллар_хизматлар!A:C", [
-    name,
-    "",
-    "TRUE"
-  ]);
+  await append("Материаллар_хизматлар!A:C", [name, "", "TRUE"]);
   cache.del("materials");
 }
 
-async function savePaymentRequest(ctx, d) {
-  const id = "P-" + Date.now();
+async function getSupplierBalance(object, supplier, inn) {
+  const debts = await getValues("Қарзлар!A2:M", "debts");
+  const advances = await getValues("Аванслар!A2:M", "advances");
 
-  await appendRow("Тўлов_аризалар!A:O", [
-    id,
-    new Date().toLocaleString("ru-RU"),
-    ctx.from.first_name || "",
-    ctx.chat.id,
-    d.object,
-    d.payType,
-    d.supplier,
-    d.supplierInn,
-    d.material,
-    d.sum,
-    "Директор тасдиғини кутяпти",
-    "",
-    "",
-    "",
-    d.comment || ""
-  ]);
+  let debt = 0;
+  let advance = 0;
 
-  await ctx.reply(
-    "✅ Тўлов учун ариза сақланди.\n\n" +
-    `ID: ${id}\n` +
-    `Объект: ${d.object}\n` +
-    `Тўлов тури: ${d.payType}\n` +
-    `Етказиб берувчи: ${d.supplier}\n` +
-    `ИНН: ${d.supplierInn}\n` +
-    `Материал/хизмат: ${d.material}\n` +
-    `Сумма: ${formatSum(d.sum)} сўм`,
-    menu()
-  );
+  debts.forEach(r => {
+    if (r[4] === object && r[5] === supplier && String(r[6]) === String(inn)) {
+      debt += Number(r[10] || 0);
+    }
+  });
+
+  advances.forEach(r => {
+    if (r[4] === object && r[5] === supplier && String(r[6]) === String(inn)) {
+      advance += Number(r[10] || 0);
+    }
+  });
+
+  return { debt, advance, net: debt - advance };
 }
 
-bot.start(async (ctx) => {
-  sessions[ctx.chat.id] = null;
-  await ctx.reply("Асосий меню", menu());
-});
-
-bot.hears("⬅️ Орқага", async (ctx) => {
-  sessions[ctx.chat.id] = null;
-  await ctx.reply("Асосий меню", menu());
-});
-
-bot.hears("💳 Тўлов учун ариза", async (ctx) => {
-  sessions[ctx.chat.id] = {
-    step: "pay_type",
-    data: {}
+async function getUsers(permission) {
+  const rows = await getValues("Ходимлар!A2:H", "users");
+  const map = {
+    create: 3,
+    director: 4,
+    accountant: 5,
+    pay: 6
   };
+
+  return rows
+    .filter(r => r[0] && active(r[7]) && active(r[map[permission]]))
+    .map(r => ({ id: r[0], name: r[1] }));
+}
+
+async function getUser(chatId) {
+  const rows = await getValues("Ходимлар!A2:H", "users");
+  const r = rows.find(x => String(x[0]) === String(chatId) && active(x[7]));
+  if (!r) return null;
+
+  return {
+    id: r[0],
+    name: r[1],
+    canCreate: active(r[3]),
+    canDirector: active(r[4]),
+    canAccountant: active(r[5]),
+    canPay: active(r[6])
+  };
+}
+
+async function sendTo(permission, text, buttons) {
+  const users = await getUsers(permission);
+  for (const u of users) {
+    try {
+      if (buttons) {
+        await bot.telegram.sendMessage(u.id, text, {
+          reply_markup: { inline_keyboard: buttons }
+        });
+      } else {
+        await bot.telegram.sendMessage(u.id, text);
+      }
+    } catch (e) {
+      console.log("send error", u.id, e.message);
+    }
+  }
+}
+
+bot.start(async ctx => {
+  const user = await getUser(ctx.chat.id);
+
+  if (!user) {
+    await ctx.reply(
+      "❌ Сиз Ходимлар листида йўқсиз.\n\nСизнинг Telegram ID: " + ctx.chat.id
+    );
+    return;
+  }
+
+  sessions[ctx.chat.id] = null;
+  await ctx.reply("Асосий меню", menu());
+});
+
+bot.hears("⬅️ Орқага", async ctx => {
+  sessions[ctx.chat.id] = null;
+  await ctx.reply("Асосий меню", menu());
+});
+
+bot.hears("📦 Қарзга олиш", async ctx => {
+  const user = await getUser(ctx.chat.id);
+  if (!user || !user.canCreate) {
+    await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
+    return;
+  }
+
+  sessions[ctx.chat.id] = { step: "debt_object", data: {} };
+  const objects = await getObjects();
+
+  await ctx.reply(
+    "Объектни танланг:",
+    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
+  );
+});
+
+bot.hears("💳 Тўлов учун ариза", async ctx => {
+  const user = await getUser(ctx.chat.id);
+  if (!user || !user.canCreate) {
+    await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
+    return;
+  }
+
+  sessions[ctx.chat.id] = { step: "pay_type", data: {} };
 
   await ctx.reply(
     "Тўлов турини танланг:",
@@ -177,37 +244,33 @@ bot.hears("💳 Тўлов учун ариза", async (ctx) => {
   );
 });
 
-bot.hears("📦 Қарзга олиш", async (ctx) => {
-  await ctx.reply("Бу қисм кейинги босқичда уланади. Ҳозир тўлов аризани текширамиз.", menu());
+bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
+  sessions[ctx.chat.id] = {
+    step: "pay_object",
+    data: { payType: ctx.message.text }
+  };
+
+  const objects = await getObjects();
+
+  await ctx.reply(
+    "Объектни танланг:",
+    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
+  );
 });
 
-bot.on("text", async (ctx) => {
+bot.on("text", async ctx => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text;
-  const session = sessions[chatId];
+  const s = sessions[chatId];
 
-  if (!session) {
+  if (!s) {
     await ctx.reply("Асосий меню", menu());
     return;
   }
 
-  const d = session.data;
+  const d = s.data;
 
-  if (session.step === "pay_type") {
-    if (text !== "Қарз ёпиш" && text !== "Аванс ўтказиш") {
-      await ctx.reply("❌ Тўлов турини танланг.");
-      return;
-    }
-
-    d.payType = text;
-    session.step = "pay_object";
-
-    const objects = await getObjects();
-    await ctx.reply("Объектни танланг:", Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize());
-    return;
-  }
-
-  if (session.step === "pay_object") {
+  if (s.step === "debt_object" || s.step === "pay_object") {
     const objects = await getObjects();
 
     if (!objects.includes(text)) {
@@ -216,44 +279,48 @@ bot.on("text", async (ctx) => {
     }
 
     d.object = text;
-    session.step = "pay_supplier";
+    s.step = s.step === "debt_object" ? "debt_supplier" : "pay_supplier";
 
     const suppliers = await getSuppliers();
-    await ctx.reply(
-      "Етказиб берувчини танланг ёки янги киритинг:",
-      makeKeyboard(suppliers, "➕ Янги етказиб берувчи")
-    );
+    await ctx.reply("Етказиб берувчини танланг ёки янги киритинг:", supplierKeyboard(suppliers));
     return;
   }
 
-  if (session.step === "pay_supplier") {
+  if (s.step === "debt_supplier" || s.step === "pay_supplier") {
     if (text === "➕ Янги етказиб берувчи") {
-      session.step = "pay_new_supplier_name";
-      await ctx.reply("Янги етказиб берувчи номини киритинг:", backKeyboard());
+      s.step = s.step === "debt_supplier" ? "debt_new_supplier_name" : "pay_new_supplier_name";
+      await ctx.reply("Янги етказиб берувчи номини киритинг:", backMenu());
       return;
     }
 
-    const supplier = parseSupplier(text);
+    const sup = parseSupplier(text);
 
-    if (!supplier.name || !isInnValid(supplier.inn)) {
+    if (!sup.name || !validInn(sup.inn)) {
       await ctx.reply("❌ Рўйхатдан танланг ёки янги етказиб берувчи киритинг.");
       return;
     }
 
-    d.supplier = supplier.name;
-    d.supplierInn = supplier.inn;
+    d.supplier = sup.name;
+    d.supplierInn = sup.inn;
 
-    session.step = "pay_material";
-    const materials = await getMaterials();
+    const bal = await getSupplierBalance(d.object, d.supplier, d.supplierInn);
 
     await ctx.reply(
-      "Материал/хизматни танланг ёки янги киритинг:",
-      makeKeyboard(materials, "➕ Янги материал/хизмат")
+      `📌 Етказиб берувчи: ${d.supplier}\n` +
+      `ИНН: ${d.supplierInn}\n\n` +
+      `Олдинги қарз: ${formatSum(bal.debt)} сўм\n` +
+      `Олдинги аванс: ${formatSum(bal.advance)} сўм\n` +
+      `Соф ҳолат: ${formatSum(Math.abs(bal.net))} сўм ${bal.net > 0 ? "қарз" : bal.net < 0 ? "аванс" : "0"}`
     );
+
+    s.step = s.step === "debt_supplier" ? "debt_material" : "pay_material";
+    const materials = await getMaterials();
+
+    await ctx.reply("Материал/хизматни танланг ёки янги киритинг:", materialKeyboard(materials));
     return;
   }
 
-  if (session.step === "pay_new_supplier_name") {
+  if (s.step === "debt_new_supplier_name" || s.step === "pay_new_supplier_name") {
     d.supplier = text.trim();
 
     if (!d.supplier) {
@@ -261,45 +328,43 @@ bot.on("text", async (ctx) => {
       return;
     }
 
-    session.step = "pay_new_supplier_inn";
-    await ctx.reply("Етказиб берувчи ИНН рақамини киритинг. ИНН 9 рақам бўлиши шарт:");
+    s.step = s.step === "debt_new_supplier_name" ? "debt_new_supplier_inn" : "pay_new_supplier_inn";
+    await ctx.reply("ИНН киритинг. ИНН 9 рақам бўлиши шарт:");
     return;
   }
 
-  if (session.step === "pay_new_supplier_inn") {
-    if (!isInnValid(text)) {
-      await ctx.reply("❌ ИНН нотўғри. ИНН фақат 9 та рақам бўлиши керак. Масалан: 123456789");
+  if (s.step === "debt_new_supplier_inn" || s.step === "pay_new_supplier_inn") {
+    if (!validInn(text)) {
+      await ctx.reply("❌ ИНН нотўғри. 9 та рақам киритинг. Масалан: 123456789");
       return;
     }
 
     d.supplierInn = text.trim();
     await addSupplier(d.supplier, d.supplierInn);
 
-    session.step = "pay_material";
+    s.step = s.step === "debt_new_supplier_inn" ? "debt_material" : "pay_material";
     const materials = await getMaterials();
 
-    await ctx.reply(
-      "✅ Етказиб берувчи сақланди.\n\nМатериал/хизматни танланг ёки янги киритинг:",
-      makeKeyboard(materials, "➕ Янги материал/хизмат")
-    );
+    await ctx.reply("✅ Етказиб берувчи сақланди.");
+    await ctx.reply("Материал/хизматни танланг ёки янги киритинг:", materialKeyboard(materials));
     return;
   }
 
-  if (session.step === "pay_material") {
+  if (s.step === "debt_material" || s.step === "pay_material") {
     if (text === "➕ Янги материал/хизмат") {
-      session.step = "pay_new_material";
-      await ctx.reply("Янги материал/хизмат номини киритинг:", backKeyboard());
+      s.step = s.step === "debt_material" ? "debt_new_material" : "pay_new_material";
+      await ctx.reply("Янги материал/хизмат номини киритинг:", backMenu());
       return;
     }
 
     d.material = text;
-    session.step = "pay_sum";
+    s.step = s.step === "debt_material" ? "debt_sum" : "pay_sum";
 
-    await ctx.reply("Ўтказиладиган суммани киритинг:");
+    await ctx.reply(s.step === "debt_sum" ? "Қарз суммасини киритинг:" : "Ўтказиладиган суммани киритинг:");
     return;
   }
 
-  if (session.step === "pay_new_material") {
+  if (s.step === "debt_new_material" || s.step === "pay_new_material") {
     d.material = text.trim();
 
     if (!d.material) {
@@ -309,12 +374,13 @@ bot.on("text", async (ctx) => {
 
     await addMaterial(d.material);
 
-    session.step = "pay_sum";
-    await ctx.reply("✅ Материал/хизмат сақланди.\n\nЎтказиладиган суммани киритинг:");
+    s.step = s.step === "debt_new_material" ? "debt_sum" : "pay_sum";
+    await ctx.reply("✅ Материал/хизмат сақланди.");
+    await ctx.reply(s.step === "debt_sum" ? "Қарз суммасини киритинг:" : "Ўтказиладиган суммани киритинг:");
     return;
   }
 
-  if (session.step === "pay_sum") {
+  if (s.step === "debt_sum" || s.step === "pay_sum") {
     const sum = cleanNumber(text);
 
     if (!sum || sum <= 0) {
@@ -323,18 +389,241 @@ bot.on("text", async (ctx) => {
     }
 
     d.sum = sum;
-    session.step = "pay_comment";
+    s.step = s.step === "debt_sum" ? "debt_comment" : "pay_comment";
 
     await ctx.reply("Изоҳ киритинг ёки '-' юборинг:");
     return;
   }
 
-  if (session.step === "pay_comment") {
+  if (s.step === "debt_comment") {
     d.comment = text;
-    await savePaymentRequest(ctx, d);
+    const id = "D-" + Date.now();
+
+    await append("Қарзлар!A:M", [
+      id,
+      new Date().toLocaleString("ru-RU"),
+      ctx.from.first_name || "",
+      ctx.chat.id,
+      d.object,
+      d.supplier,
+      d.supplierInn,
+      d.material,
+      d.sum,
+      0,
+      d.sum,
+      "Очиқ",
+      d.comment
+    ]);
+
+    cache.del("debts");
+
+    await ctx.reply("✅ Қарз сақланди.", menu());
+
+    await sendTo(
+      "director",
+      `📦 Янги қарзга олиш\n\nID: ${id}\nОбъект: ${d.object}\nЕтказиб берувчи: ${d.supplier}\nИНН: ${d.supplierInn}\nМатериал: ${d.material}\nСумма: ${formatSum(d.sum)} сўм`
+    );
+
     sessions[chatId] = null;
     return;
   }
+
+  if (s.step === "pay_comment") {
+    d.comment = text;
+    const id = "P-" + Date.now();
+
+    await append("Тўлов_аризалар!A:O", [
+      id,
+      new Date().toLocaleString("ru-RU"),
+      ctx.from.first_name || "",
+      ctx.chat.id,
+      d.object,
+      d.payType,
+      d.supplier,
+      d.supplierInn,
+      d.material,
+      d.sum,
+      "Директор тасдиғини кутяпти",
+      "",
+      "",
+      "",
+      d.comment
+    ]);
+
+    await ctx.reply("✅ Тўлов аризаси директорга юборилди.", menu());
+
+    await sendTo(
+      "director",
+      `📢 Тўлов учун янги ариза\n\nID: ${id}\nОбъект: ${d.object}\nТўлов тури: ${d.payType}\nЕтказиб берувчи: ${d.supplier}\nИНН: ${d.supplierInn}\nМатериал: ${d.material}\nСумма: ${formatSum(d.sum)} сўм`,
+      [[
+        { text: "✅ Тасдиқлаш", callback_data: `approve|${id}` },
+        { text: "❌ Рад этиш", callback_data: `reject|${id}` }
+      ]]
+    );
+
+    sessions[chatId] = null;
+    return;
+  }
+});
+
+async function getPaymentRow(id) {
+  const rows = await getValues("Тўлов_аризалар!A2:O", "payments_live");
+  const idx = rows.findIndex(r => r[0] === id);
+  if (idx === -1) return null;
+
+  const r = rows[idx];
+  return {
+    rowNumber: idx + 2,
+    id: r[0],
+    object: r[4],
+    payType: r[5],
+    supplier: r[6],
+    inn: r[7],
+    material: r[8],
+    sum: Number(r[9] || 0)
+  };
+}
+
+async function setPaymentStatus(payment, status, colUser, colDate) {
+  await updateCell(`Тўлов_аризалар!K${payment.rowNumber}`, status);
+  if (colUser) await updateCell(`Тўлов_аризалар!${colUser}${payment.rowNumber}`, new Date().toLocaleString("ru-RU"));
+  if (colDate) await updateCell(`Тўлов_аризалар!${colDate}${payment.rowNumber}`, new Date().toLocaleString("ru-RU"));
+  cache.del("payments_live");
+}
+
+async function closeDebt(payment) {
+  if (payment.payType !== "Қарз ёпиш") return;
+
+  const rows = await getValues("Қарзлар!A2:M", "debts");
+  let left = payment.sum;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+
+    if (
+      r[4] === payment.object &&
+      r[5] === payment.supplier &&
+      String(r[6]) === String(payment.inn) &&
+      r[7] === payment.material &&
+      Number(r[10] || 0) > 0 &&
+      left > 0
+    ) {
+      const rowNum = i + 2;
+      const debtSum = Number(r[8] || 0);
+      const paidOld = Number(r[9] || 0);
+      const balance = Number(r[10] || 0);
+      const payNow = Math.min(balance, left);
+
+      const newPaid = paidOld + payNow;
+      const newBalance = debtSum - newPaid;
+      const status = newBalance <= 0 ? "Ёпилди" : "Қисман ёпилди";
+
+      await updateCell(`Қарзлар!J${rowNum}`, newPaid);
+      await updateCell(`Қарзлар!K${rowNum}`, newBalance);
+      await updateCell(`Қарзлар!L${rowNum}`, status);
+
+      left -= payNow;
+    }
+  }
+
+  cache.del("debts");
+}
+
+async function saveAdvance(payment) {
+  if (payment.payType !== "Аванс ўтказиш") return;
+
+  const id = "A-" + Date.now();
+
+  await append("Аванслар!A:M", [
+    id,
+    new Date().toLocaleString("ru-RU"),
+    "",
+    "",
+    payment.object,
+    payment.supplier,
+    payment.inn,
+    payment.material,
+    payment.sum,
+    0,
+    payment.sum,
+    "Очиқ",
+    "Тўлов аризаси: " + payment.id
+  ]);
+
+  cache.del("advances");
+}
+
+bot.action(/approve\|(.+)/, async ctx => {
+  const user = await getUser(ctx.from.id);
+
+  if (!user || !user.canDirector) {
+    await ctx.answerCbQuery("Рухсат йўқ");
+    return;
+  }
+
+  const id = ctx.match[1];
+  const payment = await getPaymentRow(id);
+
+  if (!payment) {
+    await ctx.reply("❌ Ариза топилмади.");
+    return;
+  }
+
+  await setPaymentStatus(payment, "Бухгалтер тўловини кутяпти", "L", null);
+  await ctx.reply("✅ Ариза тасдиқланди.");
+
+  await sendTo(
+    "pay",
+    `💰 Тўлов топшириғи\n\nID: ${id}\nОбъект: ${payment.object}\nТўлов тури: ${payment.payType}\nЕтказиб берувчи: ${payment.supplier}\nИНН: ${payment.inn}\nМатериал: ${payment.material}\nСумма: ${formatSum(payment.sum)} сўм`,
+    [[{ text: "✅ Тўланди", callback_data: `paid|${id}` }]]
+  );
+
+  await ctx.answerCbQuery();
+});
+
+bot.action(/reject\|(.+)/, async ctx => {
+  const user = await getUser(ctx.from.id);
+
+  if (!user || !user.canDirector) {
+    await ctx.answerCbQuery("Рухсат йўқ");
+    return;
+  }
+
+  const id = ctx.match[1];
+  const payment = await getPaymentRow(id);
+
+  if (!payment) {
+    await ctx.reply("❌ Ариза топилмади.");
+    return;
+  }
+
+  await setPaymentStatus(payment, "Рад этилди", "L", null);
+  await ctx.reply("❌ Ариза рад этилди.");
+  await ctx.answerCbQuery();
+});
+
+bot.action(/paid\|(.+)/, async ctx => {
+  const user = await getUser(ctx.from.id);
+
+  if (!user || !user.canPay) {
+    await ctx.answerCbQuery("Рухсат йўқ");
+    return;
+  }
+
+  const id = ctx.match[1];
+  const payment = await getPaymentRow(id);
+
+  if (!payment) {
+    await ctx.reply("❌ Ариза топилмади.");
+    return;
+  }
+
+  await setPaymentStatus(payment, "Тўланди", "M", "N");
+  await closeDebt(payment);
+  await saveAdvance(payment);
+
+  await ctx.reply("✅ Тўлов бажарилди.");
+  await ctx.answerCbQuery();
 });
 
 app.use(bot.webhookCallback("/bot"));
