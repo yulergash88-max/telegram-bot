@@ -345,25 +345,40 @@ bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
 bot.hears("📋 қарз ҳисобот", async ctx => {
   const rows = await getValues("Директор_Ҳисобот!A4:F100", "total_report", false);
 
+  let text = "📋 ҚАРЗ ҲИСОБОТ\n\n";
+
   let debt = 0;
   let advance = 0;
   let net = 0;
 
   rows.forEach(r => {
-    if (!r[0] || r[0] === "Етказиб берувчи" || r[0] === "#N/A") return;
-    debt += toNumber(r[2]);
-    advance += toNumber(r[3]);
-    net += toNumber(r[4]);
+    const name = r[0];
+
+    if (!name || name === "Етказиб берувчи" || name === "#N/A") return;
+
+    const inn = r[1] || "";
+    const d = toNumber(r[2]);
+    const a = toNumber(r[3]);
+    const n = toNumber(r[4]);
+    const status = r[5] || "";
+
+    debt += d;
+    advance += a;
+    net += n;
+
+    text += `🏢 ${name} — ${inn}\n`;
+    text += `Қарз: ${formatSum(d)} сўм\n`;
+    text += `Аванс: ${formatSum(a)} сўм\n`;
+    text += `Соф ҳолат: ${formatSum(n)} сўм\n`;
+    text += `Ҳолат: ${status}\n\n`;
   });
 
-  await sendClean(
-    ctx,
-    `📋 Умумий қарз ҳисобот\n\n` +
-    `Жами қарз: ${formatSum(debt)} сўм\n` +
-    `Жами аванс: ${formatSum(advance)} сўм\n` +
-    `Соф ҳолат: ${formatSum(net)} сўм`,
-    menu()
-  );
+  text += `====================\n`;
+  text += `Жами қарз: ${formatSum(debt)} сўм\n`;
+  text += `Жами аванс: ${formatSum(advance)} сўм\n`;
+  text += `Соф ҳолат: ${formatSum(net)} сўм`;
+
+  await sendClean(ctx, text, menu());
 });
 
 bot.hears("📊 директор ҳисобот", async ctx => {
