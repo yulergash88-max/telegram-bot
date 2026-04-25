@@ -857,7 +857,7 @@ bot.action(/approve\|(.+)/, async ctx => {
   }
 
   await setPaymentStatus(payment, "Бухгалтер тўловини кутяпти", "L", null);
-  await ctx.reply("✅ Ариза тасдиқланди.");
+  await sendClean(ctx, "✅ Ариза тасдиқланди.");
 
   await sendTo(
     "pay",
@@ -885,7 +885,7 @@ bot.action(/reject\|(.+)/, async ctx => {
   }
 
   await setPaymentStatus(payment, "Рад этилди", "L", null);
-  await ctx.reply("❌ Ариза рад этилди.");
+  await sendClean(ctx, "❌ Ариза рад этилди.");
   await ctx.answerCbQuery();
 });
 
@@ -909,7 +909,7 @@ bot.action(/paid\|(.+)/, async ctx => {
   await closeDebt(payment);
   await saveAdvance(payment);
 
-  await ctx.reply("✅ Тўлов бажарилди.");
+  await sendClean(ctx, "✅ Тўлов бажарилди.", menu());
   await ctx.answerCbQuery();
 });
 
