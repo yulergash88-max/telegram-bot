@@ -23,7 +23,8 @@ function menu() {
   return Markup.keyboard([
     ["📦 Қарзга олиш"],
     ["💳 Тўлов учун ариза"],
-    ["📊 Қарз ҳисобот"]
+    ["📊 Директор ҳисобот"],
+    ["📋 Қарз ҳисобот"]
   ]).resize();
 }
 
@@ -47,9 +48,11 @@ function active(v) {
   return v === true || String(v || "").toUpperCase() === "TRUE" || v === "" || v === undefined;
 }
 
-async function getValues(range, key) {
-  const cached = cache.get(key);
-  if (cached) return cached;
+async function getValues(range, key, useCache = true) {
+  if (useCache) {
+    const cached = cache.get(key);
+    if (cached) return cached;
+  }
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
@@ -57,7 +60,7 @@ async function getValues(range, key) {
   });
 
   const rows = res.data.values || [];
-  cache.set(key, rows);
+  if (useCache) cache.set(key, rows);
   return rows;
 }
 
@@ -130,7 +133,12 @@ async function addMaterial(name) {
 
 async function getUsers(permission) {
   const rows = await getValues("Ходимлар!A2:H", "users");
-  const map = { create: 3, director: 4, accountant: 5, pay: 6 };
+  const map = {
+    create: 3,
+    director: 4,
+    accountant: 5,
+    pay: 6
+  };
 
   return rows
     .filter(r => r[0] && active(r[7]) && active(r[map[permission]]))
@@ -172,8 +180,8 @@ async function sendTo(permission, text, buttons) {
 }
 
 async function getSupplierBalance(object, supplier, inn) {
-  const debts = await getValues("Қарзлар!A2:M", "debts");
-  const advances = await getValues("Аванслар!A2:M", "advances");
+  const debts = await getValues("Қарзлар!A2:M", "debts", false);
+  const advances = await getValues("Аванслар!A2:M", "advances", false);
 
   let debt = 0;
   let advance = 0;
@@ -212,6 +220,7 @@ bot.hears("⬅️ Орқага", async ctx => {
 
 bot.hears("📦 Қарзга олиш", async ctx => {
   const user = await getUser(ctx.chat.id);
+
   if (!user || !user.canCreate) {
     await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
     return;
@@ -220,11 +229,15 @@ bot.hears("📦 Қарзга олиш", async ctx => {
   sessions[ctx.chat.id] = { step: "debt_object", data: {} };
   const objects = await getObjects();
 
-  await ctx.reply("Объектни танланг:", Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize());
+  await ctx.reply(
+    "Объектни танланг:",
+    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
+  );
 });
 
 bot.hears("💳 Тўлов учун ариза", async ctx => {
   const user = await getUser(ctx.chat.id);
+
   if (!user || !user.canCreate) {
     await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
     return;
@@ -232,11 +245,14 @@ bot.hears("💳 Тўлов учун ариза", async ctx => {
 
   sessions[ctx.chat.id] = { step: "pay_type", data: {} };
 
-  await ctx.reply("Тўлов турини танланг:", Markup.keyboard([
-    ["Қарз ёпиш"],
-    ["Аванс ўтказиш"],
-    ["⬅️ Орқага"]
-  ]).resize());
+  await ctx.reply(
+    "Тўлов турини танланг:",
+    Markup.keyboard([
+      ["Қарз ёпиш"],
+      ["Аванс ўтказиш"],
+      ["⬅️ Орқага"]
+    ]).resize()
+  );
 });
 
 bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
@@ -246,12 +262,16 @@ bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
   };
 
   const objects = await getObjects();
-  await ctx.reply("Объектни танланг:", Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize());
+
+  await ctx.reply(
+    "Объектни танланг:",
+    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
+  );
 });
 
-bot.hears("📊 Қарз ҳисобот", async ctx => {
-  const debts = await getValues("Қарзлар!A2:M", "debts");
-  const advances = await getValues("Аванслар!A2:M", "advances");
+bot.hears("📋 Қарз ҳисобот", async ctx => {
+  const debts = await getValues("Қарзлар!A2:M", "debts", false);
+  const advances = await getValues("Аванслар!A2:M", "advances", false);
 
   let debtTotal = 0;
   let advanceTotal = 0;
@@ -259,13 +279,111 @@ bot.hears("📊 Қарз ҳисобот", async ctx => {
   debts.forEach(r => debtTotal += Number(r[10] || 0));
   advances.forEach(r => advanceTotal += Number(r[10] || 0));
 
+  const net = debtTotal - advanceTotal;
+
   await ctx.reply(
-    `📊 Умумий ҳисобот\n\n` +
-    `Қарз: ${formatSum(debtTotal)} сўм\n` +
-    `Аванс: ${formatSum(advanceTotal)} сўм\n` +
-    `Соф ҳолат: ${formatSum(Math.abs(debtTotal - advanceTotal))} сўм ${(debtTotal - advanceTotal) > 0 ? "қарз" : "аванс"}`,
+    `📋 Умумий қарз ҳисобот\n\n` +
+    `Жами қарз: ${formatSum(debtTotal)} сўм\n` +
+    `Жами аванс: ${formatSum(advanceTotal)} сўм\n` +
+    `Соф ҳолат: ${formatSum(Math.abs(net))} сўм ${net > 0 ? "қарз" : net < 0 ? "аванс" : "0"}`,
     menu()
   );
+});
+
+bot.hears("📊 Директор ҳисобот", async ctx => {
+  const user = await getUser(ctx.chat.id);
+
+  if (!user || !user.canDirector) {
+    await ctx.reply("❌ Сизда директор ҳисоботини кўриш ҳуқуқи йўқ.");
+    return;
+  }
+
+  const debts = await getValues("Қарзлар!A2:M", "debts", false);
+  const advances = await getValues("Аванслар!A2:M", "advances", false);
+
+  const supplierMap = {};
+  const objectMap = {};
+
+  debts.forEach(r => {
+    const object = r[4] || "Номаълум объект";
+    const supplier = r[5] || "Номаълум";
+    const inn = r[6] || "";
+    const debtBalance = Number(r[10] || 0);
+    const paid = Number(r[9] || 0);
+
+    const supplierKey = supplier + " — " + inn;
+
+    if (!supplierMap[supplierKey]) {
+      supplierMap[supplierKey] = { debt: 0, advance: 0 };
+    }
+
+    supplierMap[supplierKey].debt += debtBalance;
+
+    if (!objectMap[object]) {
+      objectMap[object] = { debt: 0, paid: 0, advance: 0 };
+    }
+
+    objectMap[object].debt += debtBalance;
+    objectMap[object].paid += paid;
+  });
+
+  advances.forEach(r => {
+    const object = r[4] || "Номаълум объект";
+    const supplier = r[5] || "Номаълум";
+    const inn = r[6] || "";
+    const advanceBalance = Number(r[10] || 0);
+
+    const supplierKey = supplier + " — " + inn;
+
+    if (!supplierMap[supplierKey]) {
+      supplierMap[supplierKey] = { debt: 0, advance: 0 };
+    }
+
+    supplierMap[supplierKey].advance += advanceBalance;
+
+    if (!objectMap[object]) {
+      objectMap[object] = { debt: 0, paid: 0, advance: 0 };
+    }
+
+    objectMap[object].advance += advanceBalance;
+  });
+
+  let supplierText = "📊 ЕТКАЗИБ БЕРУВЧИЛАР\n\n";
+
+  Object.keys(supplierMap).forEach(name => {
+    const x = supplierMap[name];
+    const net = x.debt - x.advance;
+
+    supplierText += `🏢 ${name}\n`;
+    supplierText += `Қарз: ${formatSum(x.debt)} сўм\n`;
+    supplierText += `Аванс: ${formatSum(x.advance)} сўм\n`;
+    supplierText += `Соф: ${formatSum(Math.abs(net))} сўм ${net > 0 ? "қарз" : net < 0 ? "аванс" : "0"}\n\n`;
+  });
+
+  let objectText = "🏗 ОБЪЕКТЛАР\n\n";
+
+  Object.keys(objectMap).forEach(name => {
+    const x = objectMap[name];
+    const net = x.debt - x.advance;
+
+    objectText += `🏗 ${name}\n`;
+    objectText += `Қарз: ${formatSum(x.debt)} сўм\n`;
+    objectText += `Тўланган: ${formatSum(x.paid)} сўм\n`;
+    objectText += `Аванс: ${formatSum(x.advance)} сўм\n`;
+    objectText += `Соф ҳолат: ${formatSum(Math.abs(net))} сўм ${net > 0 ? "қарз" : net < 0 ? "аванс" : "0"}\n\n`;
+  });
+
+  if (supplierText.length > 3500) {
+    await ctx.reply(supplierText.slice(0, 3500) + "\n\nДавоми Google Sheets ҳисоботда.");
+  } else {
+    await ctx.reply(supplierText);
+  }
+
+  if (objectText.length > 3500) {
+    await ctx.reply(objectText.slice(0, 3500) + "\n\nДавоми Google Sheets ҳисоботда.", menu());
+  } else {
+    await ctx.reply(objectText, menu());
+  }
 });
 
 bot.on("text", async ctx => {
@@ -477,7 +595,7 @@ bot.on("text", async ctx => {
 });
 
 async function getPaymentRow(id) {
-  const rows = await getValues("Тўлов_аризалар!A2:O", "payments_live");
+  const rows = await getValues("Тўлов_аризалар!A2:O", "payments_live", false);
   const idx = rows.findIndex(r => r[0] === id);
 
   if (idx === -1) return null;
@@ -513,7 +631,7 @@ async function setPaymentStatus(payment, status, userCol, dateCol) {
 async function closeDebt(payment) {
   if (payment.payType !== "Қарз ёпиш") return;
 
-  const rows = await getValues("Қарзлар!A2:M", "debts");
+  const rows = await getValues("Қарзлар!A2:M", "debts", false);
   let left = payment.sum;
 
   for (let i = 0; i < rows.length; i++) {
