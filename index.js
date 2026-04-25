@@ -43,6 +43,14 @@ function validInn(inn) {
   return /^\d{9}$/.test(String(inn).trim());
 }
 
+function balanceText(bal) {
+  return (
+    `Қарз: ${formatSum(bal.debt)} сўм\n` +
+    `Аванс: ${formatSum(bal.advance)} сўм\n` +
+    `Соф ҳолат: ${formatSum(Math.abs(bal.net))} сўм ${bal.net > 0 ? "қарз" : bal.net < 0 ? "аванс" : "0"}`
+  );
+}
+
 function menu() {
   return Markup.keyboard([
     ["📦 Қарзга олиш"],
@@ -346,7 +354,6 @@ bot.hears("📋 қарз ҳисобот", async ctx => {
   const rows = await getValues("Директор_Ҳисобот!A4:F100", "total_report", false);
 
   let text = "📋 ҚАРЗ ҲИСОБОТ\n\n";
-
   let debt = 0;
   let advance = 0;
   let net = 0;
@@ -481,9 +488,7 @@ bot.on("text", async ctx => {
       ctx,
       `📌 Етказиб берувчи: ${d.supplier}\n` +
       `ИНН: ${d.supplierInn}\n\n` +
-      `Олдинги қарз: ${formatSum(bal.debt)} сўм\n` +
-      `Олдинги аванс: ${formatSum(bal.advance)} сўм\n` +
-      `Соф ҳолат: ${formatSum(Math.abs(bal.net))} сўм ${bal.net > 0 ? "қарз" : bal.net < 0 ? "аванс" : "0"}`
+      balanceText(bal)
     );
 
     s.step = s.step === "debt_supplier" ? "debt_material" : "pay_material";
@@ -516,8 +521,8 @@ bot.on("text", async ctx => {
     await sendClean(
       ctx,
       `✅ Топилди:\n${d.supplier} — ${d.supplierInn}\n\n` +
-      `Олдинги қарз: ${formatSum(bal.debt)} сўм\n` +
-      `Олдинги аванс: ${formatSum(bal.advance)} сўм`
+      `📌 Ҳозирги ҳолат:\n` +
+      balanceText(bal)
     );
 
     s.step = s.step === "debt_supplier_search_inn" ? "debt_material" : "pay_material";
@@ -537,10 +542,20 @@ bot.on("text", async ctx => {
 
     if (d.supplierInn && validInn(d.supplierInn)) {
       const result = await addSupplier(d.supplier, d.supplierInn);
+
       if (!result.ok) {
         d.supplier = result.name;
         d.supplierInn = result.inn;
       }
+
+      const bal = await getSupplierBalance(d.object, d.supplier, d.supplierInn);
+
+      await sendClean(
+        ctx,
+        `📌 Етказиб берувчи: ${d.supplier}\n` +
+        `ИНН: ${d.supplierInn}\n\n` +
+        balanceText(bal)
+      );
 
       s.step = s.step === "debt_new_supplier_name" ? "debt_material" : "pay_material";
       const materials = await getMaterials();
@@ -577,6 +592,13 @@ bot.on("text", async ctx => {
     } else {
       await sendClean(ctx, "✅ Етказиб берувчи сақланди.");
     }
+
+    const bal = await getSupplierBalance(d.object, d.supplier, d.supplierInn);
+
+    await sendClean(
+      ctx,
+      `📌 Ҳозирги ҳолат:\n${balanceText(bal)}`
+    );
 
     s.step = s.step === "debt_new_supplier_inn" ? "debt_material" : "pay_material";
 
@@ -693,9 +715,19 @@ bot.on("text", async ctx => {
 
     await sendClean(ctx, "✅ Қарз сақланди.", menu());
 
+    const bal = await getSupplierBalance(d.object, d.supplier, d.supplierInn);
+
     await sendTo(
       "director",
-      `📦 Янги қарзга олиш\n\nID: ${id}\nОбъект: ${d.object}\nЕтказиб берувчи: ${d.supplier}\nИНН: ${d.supplierInn}\nМатериал: ${d.material}\nМиқдор: ${d.qty}\nСумма: ${formatSum(d.sum)} сўм`
+      `📦 Янги қарзга олиш\n\n` +
+      `ID: ${id}\n` +
+      `Объект: ${d.object}\n` +
+      `Етказиб берувчи: ${d.supplier}\n` +
+      `ИНН: ${d.supplierInn}\n` +
+      `Материал: ${d.material}\n` +
+      `Миқдор: ${d.qty}\n` +
+      `Сумма: ${formatSum(d.sum)} сўм\n\n` +
+      `📌 Ҳозирги ҳолат:\n${balanceText(bal)}`
     );
 
     sessions[chatId] = null;
@@ -705,6 +737,8 @@ bot.on("text", async ctx => {
   if (s.step === "pay_comment") {
     d.comment = text;
     const id = "P-" + Date.now();
+
+    const bal = await getSupplierBalance(d.object, d.supplier, d.supplierInn);
 
     await append("Тўлов_аризалар!A:O", [
       id,
@@ -730,7 +764,15 @@ bot.on("text", async ctx => {
 
     await sendTo(
       "director",
-      `📢 Тўлов учун янги ариза\n\nID: ${id}\nОбъект: ${d.object}\nТўлов тури: ${d.payType}\nЕтказиб берувчи: ${d.supplier}\nИНН: ${d.supplierInn}\nМатериал: ${d.material}\nСумма: ${formatSum(d.sum)} сўм`,
+      `📢 Тўлов учун янги ариза\n\n` +
+      `ID: ${id}\n` +
+      `Объект: ${d.object}\n` +
+      `Тўлов тури: ${d.payType}\n` +
+      `Етказиб берувчи: ${d.supplier}\n` +
+      `ИНН: ${d.supplierInn}\n` +
+      `Материал: ${d.material}\n` +
+      `Сумма: ${formatSum(d.sum)} сўм\n\n` +
+      `📌 Ҳозирги ҳолат:\n${balanceText(bal)}`,
       [[
         { text: "✅ Тасдиқлаш", callback_data: `approve|${id}` },
         { text: "❌ Рад этиш", callback_data: `reject|${id}` }
@@ -760,7 +802,8 @@ async function getPaymentRow(id) {
     supplier: r[6],
     inn: r[7],
     material: r[8],
-    sum: toNumber(r[9])
+    sum: toNumber(r[9]),
+    status: r[10] || ""
   };
 }
 
@@ -852,16 +895,34 @@ bot.action(/approve\|(.+)/, async ctx => {
   const payment = await getPaymentRow(id);
 
   if (!payment) {
-    await ctx.reply("❌ Ариза топилмади.");
+    await sendClean(ctx, "❌ Ариза топилмади.");
+    await ctx.answerCbQuery();
+    return;
+  }
+
+  if (payment.status !== "Директор тасдиғини кутяпти") {
+    await ctx.answerCbQuery("Бу ариза аввал тасдиқланган ёки ёпилган");
+    await sendClean(ctx, "⚠️ Бу ариза аввал тасдиқланган ёки ёпилган.");
     return;
   }
 
   await setPaymentStatus(payment, "Бухгалтер тўловини кутяпти", "L", null);
+
   await sendClean(ctx, "✅ Ариза тасдиқланди.");
+
+  const bal = await getSupplierBalance(payment.object, payment.supplier, payment.inn);
 
   await sendTo(
     "pay",
-    `💰 Тўлов топшириғи\n\nID: ${id}\nОбъект: ${payment.object}\nТўлов тури: ${payment.payType}\nЕтказиб берувчи: ${payment.supplier}\nИНН: ${payment.inn}\nМатериал: ${payment.material}\nСумма: ${formatSum(payment.sum)} сўм`,
+    `💰 Тўлов топшириғи\n\n` +
+    `ID: ${id}\n` +
+    `Объект: ${payment.object}\n` +
+    `Тўлов тури: ${payment.payType}\n` +
+    `Етказиб берувчи: ${payment.supplier}\n` +
+    `ИНН: ${payment.inn}\n` +
+    `Материал: ${payment.material}\n` +
+    `Сумма: ${formatSum(payment.sum)} сўм\n\n` +
+    `📌 Ҳозирги ҳолат:\n${balanceText(bal)}`,
     [[{ text: "✅ Тўланди", callback_data: `paid|${id}` }]]
   );
 
@@ -880,7 +941,14 @@ bot.action(/reject\|(.+)/, async ctx => {
   const payment = await getPaymentRow(id);
 
   if (!payment) {
-    await ctx.reply("❌ Ариза топилмади.");
+    await sendClean(ctx, "❌ Ариза топилмади.");
+    await ctx.answerCbQuery();
+    return;
+  }
+
+  if (payment.status !== "Директор тасдиғини кутяпти") {
+    await ctx.answerCbQuery("Бу ариза аввал кўриб чиқилган");
+    await sendClean(ctx, "⚠️ Бу ариза аввал кўриб чиқилган.");
     return;
   }
 
@@ -901,7 +969,20 @@ bot.action(/paid\|(.+)/, async ctx => {
   const payment = await getPaymentRow(id);
 
   if (!payment) {
-    await ctx.reply("❌ Ариза топилмади.");
+    await sendClean(ctx, "❌ Ариза топилмади.");
+    await ctx.answerCbQuery();
+    return;
+  }
+
+  if (payment.status === "Тўланди") {
+    await ctx.answerCbQuery("Бу ариза аввал тўланган");
+    await sendClean(ctx, "⚠️ Бу ариза аввал тўланган.");
+    return;
+  }
+
+  if (payment.status !== "Бухгалтер тўловини кутяпти") {
+    await ctx.answerCbQuery("Аввал директор тасдиғи керак");
+    await sendClean(ctx, "⚠️ Аввал директор тасдиғи керак.");
     return;
   }
 
