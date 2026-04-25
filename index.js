@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 const express = require("express");
 const { Telegraf, Markup } = require("telegraf");
 const { google } = require("googleapis");
@@ -9,7 +7,6 @@ const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const cache = new NodeCache({ stdTTL: 300 });
 const sessions = {};
-
 const SHEET_ID = process.env.SHEET_ID;
 
 const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
@@ -25,7 +22,8 @@ const sheets = google.sheets({ version: "v4", auth });
 function menu() {
   return Markup.keyboard([
     ["📦 Қарзга олиш"],
-    ["💳 Тўлов учун ариза"]
+    ["💳 Тўлов учун ариза"],
+    ["📊 Қарз ҳисобот"]
   ]).resize();
 }
 
@@ -88,9 +86,7 @@ async function getObjects() {
 
 async function getSuppliers() {
   const rows = await getValues("Етказиб_берувчилар!A2:E", "suppliers");
-  return rows
-    .filter(r => r[0] && active(r[4]))
-    .map(r => `${r[0]} — ${r[1] || ""}`);
+  return rows.filter(r => r[0] && active(r[4])).map(r => `${r[0]} — ${r[1] || ""}`);
 }
 
 async function getMaterials() {
@@ -134,13 +130,7 @@ async function addMaterial(name) {
 
 async function getUsers(permission) {
   const rows = await getValues("Ходимлар!A2:H", "users");
-
-  const map = {
-    create: 3,
-    director: 4,
-    accountant: 5,
-    pay: 6
-  };
+  const map = { create: 3, director: 4, accountant: 5, pay: 6 };
 
   return rows
     .filter(r => r[0] && active(r[7]) && active(r[map[permission]]))
@@ -222,7 +212,6 @@ bot.hears("⬅️ Орқага", async ctx => {
 
 bot.hears("📦 Қарзга олиш", async ctx => {
   const user = await getUser(ctx.chat.id);
-
   if (!user || !user.canCreate) {
     await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
     return;
@@ -231,15 +220,11 @@ bot.hears("📦 Қарзга олиш", async ctx => {
   sessions[ctx.chat.id] = { step: "debt_object", data: {} };
   const objects = await getObjects();
 
-  await ctx.reply(
-    "Объектни танланг:",
-    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
-  );
+  await ctx.reply("Объектни танланг:", Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize());
 });
 
 bot.hears("💳 Тўлов учун ариза", async ctx => {
   const user = await getUser(ctx.chat.id);
-
   if (!user || !user.canCreate) {
     await ctx.reply("❌ Сизда ариза киритиш ҳуқуқи йўқ.");
     return;
@@ -247,14 +232,11 @@ bot.hears("💳 Тўлов учун ариза", async ctx => {
 
   sessions[ctx.chat.id] = { step: "pay_type", data: {} };
 
-  await ctx.reply(
-    "Тўлов турини танланг:",
-    Markup.keyboard([
-      ["Қарз ёпиш"],
-      ["Аванс ўтказиш"],
-      ["⬅️ Орқага"]
-    ]).resize()
-  );
+  await ctx.reply("Тўлов турини танланг:", Markup.keyboard([
+    ["Қарз ёпиш"],
+    ["Аванс ўтказиш"],
+    ["⬅️ Орқага"]
+  ]).resize());
 });
 
 bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
@@ -264,10 +246,25 @@ bot.hears(["Қарз ёпиш", "Аванс ўтказиш"], async ctx => {
   };
 
   const objects = await getObjects();
+  await ctx.reply("Объектни танланг:", Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize());
+});
+
+bot.hears("📊 Қарз ҳисобот", async ctx => {
+  const debts = await getValues("Қарзлар!A2:M", "debts");
+  const advances = await getValues("Аванслар!A2:M", "advances");
+
+  let debtTotal = 0;
+  let advanceTotal = 0;
+
+  debts.forEach(r => debtTotal += Number(r[10] || 0));
+  advances.forEach(r => advanceTotal += Number(r[10] || 0));
 
   await ctx.reply(
-    "Объектни танланг:",
-    Markup.keyboard([...objects.map(x => [x]), ["⬅️ Орқага"]]).resize()
+    `📊 Умумий ҳисобот\n\n` +
+    `Қарз: ${formatSum(debtTotal)} сўм\n` +
+    `Аванс: ${formatSum(advanceTotal)} сўм\n` +
+    `Соф ҳолат: ${formatSum(Math.abs(debtTotal - advanceTotal))} сўм ${(debtTotal - advanceTotal) > 0 ? "қарз" : "аванс"}`,
+    menu()
   );
 });
 
@@ -648,31 +645,14 @@ bot.action(/paid\|(.+)/, async ctx => {
   await ctx.answerCbQuery();
 });
 
-// Webhook mode (Render.com uchun)
-app.use(express.json());
 app.use(bot.webhookCallback("/bot"));
 
 app.get("/", (req, res) => {
-  res.send("Bot ishlayapti ✅");
+  res.send("Bot ishlayapti");
 });
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log("Server started on " + PORT);
-
-  // Render URL dan webhook o'rnatish
-  if (process.env.RENDER_EXTERNAL_URL) {
-    const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/bot`;
-    await bot.telegram.setWebhook(webhookUrl);
-    console.log("Webhook set:", webhookUrl);
-  } else {
-    // Local development uchun polling
-    await bot.telegram.deleteWebhook();
-    bot.launch();
-    console.log("Bot polling mode da ishlamoqda...");
-  }
 });
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
