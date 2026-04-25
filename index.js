@@ -2,11 +2,12 @@ require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const { google } = require("googleapis");
 const NodeCache = require("node-cache");
+const express = require("express");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const cache = new NodeCache({ stdTTL: 60 });
 
-// ================= GOOGLE AUTH =================
+// ================= GOOGLE =================
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"]
@@ -49,6 +50,7 @@ async function getUser(chatId) {
 
   return {
     name: r[1],
+    role: r[2],
     canCreate: active(r[3]),
     canDirector: active(r[4]),
     canAccountant: active(r[5]),
@@ -57,13 +59,17 @@ async function getUser(chatId) {
 }
 
 // ================= MENU =================
-function menu() {
+function menu(user) {
+  let buttons = [];
+
+  if (user.canCreate) buttons.push(["📦 Қарзга олиш"]);
+  if (user.canPay) buttons.push(["💳 Тўлов учун ариза"]);
+  if (user.canDirector) buttons.push(["📊 директор ҳисобот"]);
+  if (user.canAccountant || user.canDirector) buttons.push(["📋 қарз ҳисобот"]);
+
   return {
     reply_markup: {
-      keyboard: [
-        ["📊 директор ҳисобот"],
-        ["📋 қарз ҳисобот"]
-      ],
+      keyboard: buttons,
       resize_keyboard: true
     }
   };
@@ -71,17 +77,17 @@ function menu() {
 
 // ================= START =================
 bot.start(async ctx => {
-  cache.flushAll(); // 🔥 муҳим
+  cache.flushAll();
 
   const user = await getUser(ctx.chat.id);
 
   if (!user) {
     return ctx.reply(
-      `❌ Сиз Ходимлар листида йўқсиз\n\nTelegram ID: ${ctx.chat.id}`
+      `❌ Сиз Ходимлар листида йўқсиз\nTelegram ID: ${ctx.chat.id}`
     );
   }
 
-  ctx.reply(`Асосий меню`, menu());
+  ctx.reply(`Асосий меню`, menu(user));
 });
 
 // ================= DIRECTOR REPORT =================
@@ -101,9 +107,9 @@ bot.hears("📊 директор ҳисобот", async ctx => {
     if (!r[0]) return;
 
     supplierText += `🏢 ${r[0]} — ${r[1]}\n`;
-    supplierText += `Қарз: ${formatSum(r[2])}\n`;
-    supplierText += `Аванс: ${formatSum(r[3])}\n`;
-    supplierText += `Соф ҳолат: ${formatSum(r[4])}\n`;
+    supplierText += `Қарз: ${formatSum(r[2])} сўм\n`;
+    supplierText += `Аванс: ${formatSum(r[3])} сўм\n`;
+    supplierText += `Соф ҳолат: ${formatSum(r[4])} сўм\n`;
     supplierText += `Ҳолат: ${r[5]}\n\n`;
   });
 
@@ -113,10 +119,10 @@ bot.hears("📊 директор ҳисобот", async ctx => {
     if (!r[0]) return;
 
     objectText += `🏗 ${r[0]}\n`;
-    objectText += `Қарз: ${formatSum(r[1])}\n`;
-    objectText += `Тўланган: ${formatSum(r[2])}\n`;
-    objectText += `Аванс: ${formatSum(r[3])}\n`;
-    objectText += `Соф ҳолат: ${formatSum(r[4])}\n\n`;
+    objectText += `Қарз: ${formatSum(r[1])} сўм\n`;
+    objectText += `Тўланган: ${formatSum(r[2])} сўм\n`;
+    objectText += `Аванс: ${formatSum(r[3])} сўм\n`;
+    objectText += `Соф ҳолат: ${formatSum(r[4])} сўм\n\n`;
   });
 
   await ctx.reply(supplierText);
@@ -141,10 +147,19 @@ bot.hears("📋 қарз ҳисобот", async ctx => {
 
   ctx.reply(
     `📋 Умумий ҳисобот\n\n` +
-    `Қарз: ${formatSum(debt)}\n` +
-    `Аванс: ${formatSum(advance)}\n` +
-    `Соф ҳолат: ${formatSum(net)}`
+    `Қарз: ${formatSum(debt)} сўм\n` +
+    `Аванс: ${formatSum(advance)} сўм\n` +
+    `Соф ҳолат: ${formatSum(net)} сўм`
   );
+});
+
+// ================= SIMPLE ACTIONS =================
+bot.hears("📦 Қарзга олиш", ctx => {
+  ctx.reply("📦 Қарзга олиш қисми кейин қўшилади");
+});
+
+bot.hears("💳 Тўлов учун ариза", ctx => {
+  ctx.reply("💳 Тўлов аризаси қисми кейин қўшилади");
 });
 
 // ================= ERROR =================
@@ -153,12 +168,11 @@ bot.catch(err => {
 });
 
 // ================= SERVER =================
-const express = require("express");
 const app = express();
 
 app.use(bot.webhookCallback("/bot"));
 
-app.get("/", (req, res) => res.send("Bot работает"));
+app.get("/", (req, res) => res.send("Bot ishlayapti"));
 
 app.listen(process.env.PORT || 3000, async () => {
   await bot.telegram.setWebhook(`${process.env.RENDER_EXTERNAL_URL}/bot`);
